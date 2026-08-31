@@ -529,6 +529,19 @@ export function evaluateSurvivorRoles(
   };
 }
 
+export interface TargetPlayerUpdate {
+  targetId: string;
+  rescueProgress?: number;
+  healProgress?: number;
+  health?: HealthState;
+  wasRescuedFromCage?: boolean;
+  hitBoostTime?: number;
+  assignedCageId?: number | null;
+  jackRescuedWindow?: number;
+  deepInjury?: boolean;
+  erikSkillAvailable?: boolean;
+}
+
 /**
  * Execute Survivor AI tick following strict Action 1-5 priority & E1-E14 Endgame Breakthrough
  */
@@ -539,6 +552,7 @@ export function updateSurvivorAI(
 ): {
   updatedSurvivor: PlayerState;
   decision: SurvivorDecision;
+  targetPlayerUpdate?: TargetPlayerUpdate;
 } {
   let s = { ...survivor };
   const pMesh = ctx.playerMeshes[s.id];
@@ -774,7 +788,9 @@ export function updateSurvivorAI(
       const targetPlayer = ctx.allPlayers.find(p => p.id === roleAssignment.rescueTargetId);
       if (targetPlayer && targetPlayer.health === 'caged') {
         const dTarget = Math.hypot(targetPlayer.x - s.x, targetPlayer.z - s.z);
-        if (dTarget > 2.8) {
+        let targetPlayerUpdate: TargetPlayerUpdate | undefined;
+
+        if (dTarget > 3.2) {
           const angle = Math.atan2(targetPlayer.x - s.x, targetPlayer.z - s.z);
           s.rotationY = angle;
           const targetX = s.x + Math.sin(angle) * s.speed * ctx.delta;
@@ -789,17 +805,40 @@ export function updateSurvivorAI(
           const currentRescueProg = targetPlayer.rescueProgress || 0;
           const nextRescueProg = Math.min(100, currentRescueProg + (ctx.delta / 1.5) * 100);
           targetPlayer.rescueProgress = nextRescueProg;
+
           if (nextRescueProg >= 100) {
             targetPlayer.health = 'injured';
-            // 保留上一次在監牢被救出時的剩餘獻祭時間 (不重置為 90 秒)
             targetPlayer.rescueProgress = 0;
             targetPlayer.healProgress = 0;
             targetPlayer.wasRescuedFromCage = true;
             targetPlayer.hitBoostTime = 2.0;
+            let freedCageId: number | null = null;
+            if (targetPlayer.assignedCageId !== undefined && targetPlayer.assignedCageId !== null) {
+              freedCageId = targetPlayer.assignedCageId;
+              const freedCage = ctx.cages.find(c => c.id === freedCageId);
+              if (freedCage) freedCage.occupiedPlayerId = null;
+              targetPlayer.assignedCageId = null;
+            }
             if (targetPlayer.characterId === 'jack') targetPlayer.jackRescuedWindow = 30;
             const tMesh = ctx.playerMeshes[targetPlayer.id];
             if (tMesh?.userData?.setPose) tMesh.userData.setPose('front');
             sound.playSkillSound();
+
+            targetPlayerUpdate = {
+              targetId: targetPlayer.id,
+              health: 'injured',
+              rescueProgress: 0,
+              healProgress: 0,
+              wasRescuedFromCage: true,
+              hitBoostTime: 2.0,
+              assignedCageId: null,
+              jackRescuedWindow: targetPlayer.characterId === 'jack' ? 30 : undefined,
+            };
+          } else {
+            targetPlayerUpdate = {
+              targetId: targetPlayer.id,
+              rescueProgress: nextRescueProg,
+            };
           }
         }
 
@@ -811,6 +850,7 @@ export function updateSurvivorAI(
             targetId: targetPlayer.id,
             detail: `Rescuing ${targetPlayer.name} during endgame`,
           },
+          targetPlayerUpdate,
         };
       }
     }
@@ -903,8 +943,9 @@ export function updateSurvivorAI(
     const targetPlayer = ctx.allPlayers.find(p => p.id === roleAssignment.rescueTargetId);
     if (targetPlayer && (targetPlayer.health === 'caged' || targetPlayer.health === 'downed')) {
       const dTarget = Math.hypot(targetPlayer.x - s.x, targetPlayer.z - s.z);
+      let targetPlayerUpdate: TargetPlayerUpdate | undefined;
 
-      if (dTarget > 2.8) {
+      if (dTarget > 3.2) {
         const angle = Math.atan2(targetPlayer.x - s.x, targetPlayer.z - s.z);
         s.rotationY = angle;
         const targetX = s.x + Math.sin(angle) * s.speed * ctx.delta;
@@ -926,6 +967,7 @@ export function updateSurvivorAI(
           const currentRescueProg = targetPlayer.rescueProgress || 0;
           const nextRescueProg = Math.min(100, currentRescueProg + (ctx.delta / 1.5) * 100);
           targetPlayer.rescueProgress = nextRescueProg;
+
           if (nextRescueProg >= 100) {
             targetPlayer.health = 'injured';
             // 保留上一次在監牢被救出時的剩餘獻祭時間 (不重置為 90 秒)
@@ -933,8 +975,10 @@ export function updateSurvivorAI(
             targetPlayer.healProgress = 0;
             targetPlayer.wasRescuedFromCage = true;
             targetPlayer.hitBoostTime = 2.0;
+            let freedCageId: number | null = null;
             if (targetPlayer.assignedCageId !== undefined && targetPlayer.assignedCageId !== null) {
-              const freedCage = ctx.cages.find(c => c.id === targetPlayer.assignedCageId);
+              freedCageId = targetPlayer.assignedCageId;
+              const freedCage = ctx.cages.find(c => c.id === freedCageId);
               if (freedCage) freedCage.occupiedPlayerId = null;
               targetPlayer.assignedCageId = null;
             }
@@ -942,14 +986,44 @@ export function updateSurvivorAI(
             const tMesh = ctx.playerMeshes[targetPlayer.id];
             if (tMesh?.userData?.setPose) tMesh.userData.setPose('front');
             sound.playSkillSound();
+
+            targetPlayerUpdate = {
+              targetId: targetPlayer.id,
+              health: 'injured',
+              rescueProgress: 0,
+              healProgress: 0,
+              wasRescuedFromCage: true,
+              hitBoostTime: 2.0,
+              assignedCageId: null,
+              jackRescuedWindow: targetPlayer.characterId === 'jack' ? 30 : undefined,
+            };
+          } else {
+            targetPlayerUpdate = {
+              targetId: targetPlayer.id,
+              rescueProgress: nextRescueProg,
+            };
           }
         } else if (targetPlayer.health === 'downed') {
           const healRate = targetPlayer.deepInjury ? (100 / 24) : (100 / 16);
-          targetPlayer.healProgress = Math.min(100, (targetPlayer.healProgress || 0) + healRate * ctx.delta);
-          if (targetPlayer.healProgress >= 100) {
+          const nextProg = Math.min(100, (targetPlayer.healProgress || 0) + healRate * ctx.delta);
+          targetPlayer.healProgress = nextProg;
+
+          if (nextProg >= 100) {
             targetPlayer.health = 'injured';
             targetPlayer.healProgress = 0;
             targetPlayer.deepInjury = false;
+
+            targetPlayerUpdate = {
+              targetId: targetPlayer.id,
+              health: 'injured',
+              healProgress: 0,
+              deepInjury: false,
+            };
+          } else {
+            targetPlayerUpdate = {
+              targetId: targetPlayer.id,
+              healProgress: nextProg,
+            };
           }
         }
       }
@@ -962,6 +1036,7 @@ export function updateSurvivorAI(
           targetId: targetPlayer.id,
           detail: `Rescuing ${targetPlayer.name} (Dist: ${dTarget.toFixed(1)}m)`,
         },
+        targetPlayerUpdate,
       };
     }
   }
@@ -1011,8 +1086,9 @@ export function updateSurvivorAI(
 
   if (healTarget && healTarget.health === 'injured' && !killerApproachingTooClose) {
     const dTarget = Math.hypot(healTarget.x - s.x, healTarget.z - s.z);
+    let targetPlayerUpdate: TargetPlayerUpdate | undefined;
 
-    if (dTarget > 2.6) {
+    if (dTarget > 3.0) {
       // Approach injured teammate to heal
       const angle = Math.atan2(healTarget.x - s.x, healTarget.z - s.z);
       s.rotationY = angle;
@@ -1050,6 +1126,20 @@ export function updateSurvivorAI(
         healTarget.wasRescuedFromCage = false; // Reset rescued flag
         healTarget.erikSkillAvailable = true; // Erik recharged upon returning to healthy
         sound.playSkillSound();
+
+        targetPlayerUpdate = {
+          targetId: healTarget.id,
+          health: 'healthy',
+          healProgress: 0,
+          deepInjury: false,
+          wasRescuedFromCage: false,
+          erikSkillAvailable: true,
+        };
+      } else {
+        targetPlayerUpdate = {
+          targetId: healTarget.id,
+          healProgress: nextHealProg,
+        };
       }
     }
 
@@ -1061,6 +1151,7 @@ export function updateSurvivorAI(
         targetId: healTarget.id,
         detail: `🩹 正在包紮治療隊友 ${healTarget.name} [ ${Math.floor(healTarget.healProgress || 0)}% ] (Dist: ${dTarget.toFixed(1)}m)`,
       },
+      targetPlayerUpdate,
     };
   }
 

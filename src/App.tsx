@@ -1401,6 +1401,28 @@ export default function App() {
           }
         }
 
+        // --- AI 逃生者決策預先運算 (收集救援/治療對目標玩家的狀態更新) ---
+        const aiSurvivorUpdates: Record<string, any> = {};
+        const aiTargetPlayerUpdates: Record<string, any> = {};
+
+        const aiSurvivors = prevPlayers.filter(p => p.faction === 'survivor' && p.id !== humanPlayerId && p.health !== 'dead' && p.health !== 'escaped');
+        for (const sPlayer of aiSurvivors) {
+          const survRes = updateSurvivorAI(
+            {
+              ...sPlayer,
+              rescueProgress: sPlayer.rescueProgress || 0,
+              cagingProgress: sPlayer.cagingProgress || 0,
+              isBeingCaged: sPlayer.isBeingCaged || false,
+            },
+            aiCtx,
+            roleAssignment
+          );
+          aiSurvivorUpdates[sPlayer.id] = survRes.updatedSurvivor;
+          if (survRes.targetPlayerUpdate) {
+            aiTargetPlayerUpdates[survRes.targetPlayerUpdate.targetId] = survRes.targetPlayerUpdate;
+          }
+        }
+
         const updatedPlayers = prevPlayers.map(p => {
           let nx = p.x;
           let nz = p.z;
@@ -1409,9 +1431,13 @@ export default function App() {
           let cageTimer = p.cageTimer;
           let deepInjury = p.deepInjury || false;
           let healProgress = p.healProgress || 0;
+          let rescueProgress = p.rescueProgress || 0;
           let cagingProgress = p.cagingProgress || 0;
           let isBeingCaged = p.isBeingCaged || false;
           let cagedByKillerId = p.cagedByKillerId || null;
+          let wasRescuedFromCage = p.wasRescuedFromCage || false;
+          let jackRescuedWindow = p.jackRescuedWindow;
+          let erikSkillAvailable = p.erikSkillAvailable;
           let skillCD = Math.max(0, p.skillCooldown - delta);
           let attackCD = Math.max(0, (p.attackCooldown || 0) - delta);
           let skillActive = Math.max(0, p.skillActiveTime - delta);
@@ -1425,6 +1451,26 @@ export default function App() {
           let jackBuffTime = Math.max(0, (p.jackBuffTime || 0) - delta);
           let vikingBuffTime = Math.max(0, (p.vikingBuffTime || 0) - delta);
           let satoBuffTime = Math.max(0, (p.satoBuffTime || 0) - delta);
+
+          // 應用 AI 隊友對此玩家的解救 / 治療進度與狀態更新
+          if (aiTargetPlayerUpdates[p.id]) {
+            const tUpdate = aiTargetPlayerUpdates[p.id];
+            if (tUpdate.rescueProgress !== undefined) rescueProgress = tUpdate.rescueProgress;
+            if (tUpdate.healProgress !== undefined) healProgress = tUpdate.healProgress;
+            if (tUpdate.health !== undefined) health = tUpdate.health;
+            if (tUpdate.wasRescuedFromCage !== undefined) wasRescuedFromCage = tUpdate.wasRescuedFromCage;
+            if (tUpdate.hitBoostTime !== undefined) hitBoostTime = tUpdate.hitBoostTime;
+            if (tUpdate.assignedCageId !== undefined) {
+              if (p.assignedCageId) {
+                const freedId = p.assignedCageId;
+                setCages(prevCages => prevCages.map(c => c.id === freedId ? { ...c, occupiedPlayerId: null } : c));
+              }
+              p.assignedCageId = tUpdate.assignedCageId;
+            }
+            if (tUpdate.jackRescuedWindow !== undefined) jackRescuedWindow = tUpdate.jackRescuedWindow;
+            if (tUpdate.deepInjury !== undefined) deepInjury = tUpdate.deepInjury;
+            if (tUpdate.erikSkillAvailable !== undefined) erikSkillAvailable = tUpdate.erikSkillAvailable;
+          }
 
           // 應用擊中或押送狀態
           if (hitMap[p.id]) {
@@ -1730,53 +1776,27 @@ export default function App() {
                 berserkTime = kUpdate.berserkTime;
               }
             } else {
-              const survRes = updateSurvivorAI(
-                {
-                  ...p,
-                  x: nx,
-                  z: nz,
-                  rotationY: rot,
-                  health,
-                  cageTimer,
-                  deepInjury,
-                  healProgress,
-                  hitBoostTime,
-                  frostbiteTime,
-                  elenaBuffTime,
-                  tariqStealthTime,
-                  tariqSpeedBoostTime,
-                  betrayedTeammateTime,
-                  jackBuffTime,
-                  vikingBuffTime,
-                  satoBuffTime,
-                  rescueProgress: p.rescueProgress || 0,
-                  cagingProgress: p.cagingProgress || 0,
-                  isBeingCaged: p.isBeingCaged || false,
-                  skillCooldown: skillCD,
-                  attackCooldown: attackCD,
-                  skillActiveTime: skillActive,
-                },
-                aiCtx,
-                roleAssignment
-              );
-              nx = survRes.updatedSurvivor.x;
-              nz = survRes.updatedSurvivor.z;
-              rot = survRes.updatedSurvivor.rotationY;
-              health = survRes.updatedSurvivor.health;
-              cageTimer = survRes.updatedSurvivor.cageTimer;
-              deepInjury = survRes.updatedSurvivor.deepInjury || deepInjury;
-              healProgress = survRes.updatedSurvivor.healProgress || 0;
-              skillCD = survRes.updatedSurvivor.skillCooldown;
-              skillActive = survRes.updatedSurvivor.skillActiveTime;
-              hitBoostTime = survRes.updatedSurvivor.hitBoostTime || 0;
-              frostbiteTime = survRes.updatedSurvivor.frostbiteTime || 0;
-              elenaBuffTime = survRes.updatedSurvivor.elenaBuffTime || 0;
-              tariqStealthTime = survRes.updatedSurvivor.tariqStealthTime || 0;
-              tariqSpeedBoostTime = survRes.updatedSurvivor.tariqSpeedBoostTime || 0;
-              betrayedTeammateTime = survRes.updatedSurvivor.betrayedTeammateTime || 0;
-              jackBuffTime = survRes.updatedSurvivor.jackBuffTime || 0;
-              vikingBuffTime = survRes.updatedSurvivor.vikingBuffTime || 0;
-              satoBuffTime = survRes.updatedSurvivor.satoBuffTime || 0;
+              const sUpdate = aiSurvivorUpdates[p.id];
+              if (sUpdate) {
+                nx = sUpdate.x;
+                nz = sUpdate.z;
+                rot = sUpdate.rotationY;
+                health = sUpdate.health;
+                cageTimer = sUpdate.cageTimer;
+                deepInjury = sUpdate.deepInjury || deepInjury;
+                healProgress = sUpdate.healProgress || 0;
+                skillCD = sUpdate.skillCooldown;
+                skillActive = sUpdate.skillActiveTime;
+                hitBoostTime = sUpdate.hitBoostTime || 0;
+                frostbiteTime = sUpdate.frostbiteTime || 0;
+                elenaBuffTime = sUpdate.elenaBuffTime || 0;
+                tariqStealthTime = sUpdate.tariqStealthTime || 0;
+                tariqSpeedBoostTime = sUpdate.tariqSpeedBoostTime || 0;
+                betrayedTeammateTime = sUpdate.betrayedTeammateTime || 0;
+                jackBuffTime = sUpdate.jackBuffTime || 0;
+                vikingBuffTime = sUpdate.vikingBuffTime || 0;
+                satoBuffTime = sUpdate.satoBuffTime || 0;
+              }
             }
           }
 
@@ -1790,13 +1810,13 @@ export default function App() {
             assignedCageId,
             deepInjury,
             healProgress,
-            rescueProgress: p.rescueProgress || 0,
+            rescueProgress,
             cagingProgress: p.cagingProgress || 0,
             isBeingCaged: p.isBeingCaged || false,
             cagedByKillerId: p.cagedByKillerId || null,
-            wasRescuedFromCage: p.wasRescuedFromCage || false,
-            jackRescuedWindow: p.jackRescuedWindow,
-            erikSkillAvailable: p.erikSkillAvailable,
+            wasRescuedFromCage,
+            jackRescuedWindow,
+            erikSkillAvailable,
             nextFearScreamTimer: screamTimer,
             fearScreamRevealTimer: screamRevealTimer,
             fearScreamRevealedToKiller: fearRevealed,
