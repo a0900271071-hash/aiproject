@@ -543,6 +543,30 @@ export function updateSurvivorAI(
   let s = { ...survivor };
   const pMesh = ctx.playerMeshes[s.id];
 
+  // Active timer decrements based on tick delta (prevents hitBoostTime and buff deadlock)
+  s.hitBoostTime = Math.max(0, (s.hitBoostTime || 0) - ctx.delta);
+  s.frostbiteTime = Math.max(0, (s.frostbiteTime || 0) - ctx.delta);
+  s.elenaBuffTime = Math.max(0, (s.elenaBuffTime || 0) - ctx.delta);
+  s.tariqStealthTime = Math.max(0, (s.tariqStealthTime || 0) - ctx.delta);
+  s.tariqSpeedBoostTime = Math.max(0, (s.tariqSpeedBoostTime || 0) - ctx.delta);
+  s.betrayedTeammateTime = Math.max(0, (s.betrayedTeammateTime || 0) - ctx.delta);
+  s.jackBuffTime = Math.max(0, (s.jackBuffTime || 0) - ctx.delta);
+  s.vikingBuffTime = Math.max(0, (s.vikingBuffTime || 0) - ctx.delta);
+  s.satoBuffTime = Math.max(0, (s.satoBuffTime || 0) - ctx.delta);
+  s.skillCooldown = Math.max(0, (s.skillCooldown || 0) - ctx.delta);
+  s.skillActiveTime = Math.max(0, (s.skillActiveTime || 0) - ctx.delta);
+
+  // Recalculate speed dynamically during hit boost or active buffs
+  if (s.hitBoostTime > 0) {
+    s.speed = 8.0;
+  } else {
+    let survBase = 5.0;
+    if (s.frostbiteTime > 0) survBase *= 0.85;
+    if (s.vikingBuffTime > 0) survBase *= 1.5;
+    if (s.tariqSpeedBoostTime > 0) survBase *= 1.35;
+    s.speed = survBase;
+  }
+
   // G5: Death / Game Over / Inactive State
   if (s.health === 'caged' || s.health === 'dead' || s.health === 'escaped' || s.health === 'downed') {
     if (pMesh?.userData?.updateMovementPose) {
@@ -1162,6 +1186,11 @@ export function updateKillerAI(
     };
   }
 
+  // Active timer decrements based on tick delta (prevents cooldown deadlock)
+  k.attackCooldown = Math.max(0, (k.attackCooldown || 0) - ctx.delta);
+  k.skillCooldown = Math.max(0, (k.skillCooldown || 0) - ctx.delta);
+  k.berserkTime = Math.max(0, (k.berserkTime || 0) - ctx.delta);
+
   const survivors = ctx.allPlayers.filter(p => p.faction === 'survivor');
   const completedGens = ctx.generators.filter(g => g.isCompleted && g.isTargetGen).length;
   const gatesArePowered = completedGens >= 5;
@@ -1368,17 +1397,28 @@ export function updateKillerAI(
           },
           hitSurvivorId: gateSurv.id,
         };
-      }
+      } else {
+        // In close range during attack cooldown, keep pressing towards gate opener
+        const targetX = k.x + Math.sin(angle) * (k.speed * 0.9) * ctx.delta;
+        const targetZ = k.z + Math.cos(angle) * (k.speed * 0.9) * ctx.delta;
+        const moved = aiMoveWithCollision(k.x, k.z, targetX, targetZ, ctx.mapColliders, ctx.genPositions, 0.75);
+        k.x = moved.x;
+        k.z = moved.z;
 
-      return {
-        updatedKiller: k,
-        decision: {
-          moveType: 'FINAL_PHASE_DEFENSE',
-          targetPos: { x: gateSurv.x, z: gateSurv.z },
-          targetId: gateSurv.id,
-          detail: `Preventing gate opening by ${gateSurv.name} (Dist: ${dToSurv.toFixed(1)}m)`,
-        },
-      };
+        if (pMesh?.userData?.updateMovementPose) {
+          pMesh.userData.updateMovementPose(ctx.delta, true, 1, k.health);
+        }
+
+        return {
+          updatedKiller: k,
+          decision: {
+            moveType: 'FINAL_PHASE_DEFENSE',
+            targetPos: { x: gateSurv.x, z: gateSurv.z },
+            targetId: gateSurv.id,
+            detail: `Preventing gate opening by ${gateSurv.name} (Dist: ${dToSurv.toFixed(1)}m, Cooldown: ${(k.attackCooldown || 0).toFixed(1)}s)`,
+          },
+        };
+      }
     }
 
     // 2. If no survivor at gate, patrol towards exit gate to intercept
@@ -1534,6 +1574,28 @@ export function updateKillerAI(
           message: msg,
         },
         hitSurvivorId: closestSurv.id,
+      };
+    } else {
+      // Close-range tracking / pressure while on attack cooldown or during hit boost
+      const targetX = k.x + Math.sin(angle) * (k.speed * 0.9) * ctx.delta;
+      const targetZ = k.z + Math.cos(angle) * (k.speed * 0.9) * ctx.delta;
+      const moved = aiMoveWithCollision(k.x, k.z, targetX, targetZ, ctx.mapColliders, ctx.genPositions, 0.75);
+      k.x = moved.x;
+      k.z = moved.z;
+
+      if (pMesh?.userData?.updateMovementPose) {
+        const dx = moved.x - killer.x;
+        pMesh.userData.updateMovementPose(ctx.delta, true, dx >= 0 ? 1 : -1, k.health);
+      }
+
+      return {
+        updatedKiller: k,
+        decision: {
+          moveType: 'CHASE_SURVIVOR',
+          targetPos: { x: closestSurv.x, z: closestSurv.z },
+          targetId: closestSurv.id,
+          detail: `Pressuring ${closestSurv.name} (Cooldown: ${(k.attackCooldown || 0).toFixed(1)}s, Dist: ${rawDist.toFixed(1)}m)`,
+        },
       };
     }
   }
